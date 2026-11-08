@@ -111,6 +111,23 @@ int main(int argc,char **argv){
     }
     int16_t matrix[2400];nvt_frame_matrix(got,matrix);
     for(int i=0;i<2400;++i)assert((uint16_t)matrix[i]==(uint16_t)(frame[NVT_THP_MATRIX_OFFSET+i*2]|(frame[NVT_THP_MATRIX_OFFSET+i*2+1]<<8)));
+    // 3a. Packet kind: only the full-frame metadata byte313 identifies stylus.
+    // Neighbour bytes, matrix contents and the ordinary frame type cannot select it.
+    {
+        uint8_t classified[NVT_THP_FRAME_LEN],before[NVT_THP_FRAME_LEN];
+        memcpy(classified,got,sizeof(classified));
+        classified[NVT_THP_DATA_TYPE_OFFSET-1]=0x1d;
+        classified[NVT_THP_DATA_TYPE_OFFSET+1]=0x1d;
+        classified[NVT_THP_MATRIX_OFFSET]=0x1d;
+        for(unsigned data_type=0;data_type<256;++data_type) {
+            classified[NVT_THP_DATA_TYPE_OFFSET]=(uint8_t)data_type;
+            memcpy(before,classified,sizeof(before));
+            assert(nvt_frame_data_type(classified)==data_type);
+            assert(nvt_frame_is_stylus(classified)==(data_type==0x1d));
+            assert(!memcmp(before,classified,sizeof(before)));
+            assert(nvt_frame_type(classified)==4&&nvt_frame_counter(classified)==0x1234);
+        }
+    }
     // 3b. Post-download sequence: fw info, custom commands with status handshake, doze delay, header check.
     model_reset();assert(!nvt_identify(&chip));
     {

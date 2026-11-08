@@ -52,6 +52,13 @@ struct nvt_contact {
     int peak, area, weight;
 };
 
+#define NVT_REGION_MAX_CANDIDATES 24
+struct nvt_region_candidates {
+    struct nvt_contact contact[NVT_REGION_MAX_CANDIDATES];
+    unsigned quality_mask;
+    int count,clipped_count,overflow,first_row,row_count;
+};
+
 struct nvt_slot {
     int active, tracking_id, age, x, y;
     int rx, ry;      // the position last reported, after the filter (x, y stay raw: tracking uses them)
@@ -60,6 +67,14 @@ struct nvt_slot {
     int dx, dy;      // the last raw step per frame: tracking looks for the blob where the finger is heading
     int missed;      // consecutive frames without a matching blob (held while <= NVT_HOLD_FRAMES)
     int miss_reason; // why the first of those frames had no match (NVT_MISS_*)
+    // Timed API: only accepted M or separately qualified PM positions refresh observation time.
+    uint64_t born_us, last_observed_us, last_interval_us;
+    uint64_t last_filter_us; // Last actual accepted position/filter-state update.
+    int filter_raw_x, filter_raw_y; // Previous accepted raw position, never origin/q.
+    int origin_x, origin_y;         // Actual first sample for report confirmation.
+    uint64_t generation;            // Changes when a slot is allocated to a new contact.
+    uint64_t last_presence_us;       // Separate evidence; never grants position renewal.
+    uint64_t last_covered_negative_us; // Explicit qualified negative-decision time.
 };
 
 // Why a tracked finger found no blob: none at all, the nearest beyond the tracking radius, below the up threshold, palm-sized, or already
@@ -86,6 +101,15 @@ struct nvt_touch_core {
     // Fingers that went unseen and came back within NVT_HOLD_FRAMES, fingers lifted per miss reason, and frames by type (2 / 4).
     unsigned long holds_bridged, ends[NVT_MISS_KINDS], frames_by_type[2];
     struct nvt_slot slots[NVT_SLOTS];
+    // Experimental aggressive policy, separate from legacy scan-count behavior.
+    uint64_t now_us, previous_matrix_us;
+    unsigned timed_enabled, clock_valid, matrix_clock_valid;
+    unsigned retired_ids, previous_retired_ids;
+    uint64_t next_generation;
+    uint64_t last_region_us;
+    unsigned region_clock_valid;
+    unsigned long pending_expired, observation_cancelled, dropout_expired;
+    unsigned long far_retired, clock_rebases, id_quarantine_drops;
     // Scratch for nvt_touch_process: 19 KB, kept here because kernel threads have 16 KiB stacks (a stack probe in the
     // function prologue faulted on hardware when these were locals).
     int delta[NVT_NODES];
@@ -97,6 +121,53 @@ void nvt_touch_reset(struct nvt_touch_core *core);
 // (-1 while the startup baseline is still being collected). frame_type 2 = baseline frame.
 int nvt_touch_process(struct nvt_touch_core *core, const int16_t *matrix, unsigned frame_type,
                       struct nvt_contact *out, int max);
+// Real-time cancellation budgets, NOT sensor proof of a physical lift.
+// Only qualified M/PM finger positions can renew the position deadline.
+#define NVT_PENDING_MAX_US UINT64_C(25000)
+#define NVT_DROPOUT_MAX_US UINT64_C(25000)
+#define NVT_OBSERVATION_MAX_US UINT64_C(100000)
+// Like the legacy API, but timestamps are monotonic microseconds. Caller should
+// publish an expire() cancellation set before processing a new observation.
+int nvt_touch_process_timed(struct nvt_touch_core *core, const int16_t *matrix,
+                           unsigned frame_type, uint64_t now_us,
+                           struct nvt_contact *out, int max);
+// Extract covered rows using the SAME segmentation/merging/centroid as full M.
+// Values are contiguous row_count*60 real signed16 samples. Clipped components
+// and those without the required two-node background/merge ring are excluded.
+// Does not update reference, contact state or negative-evidence/lifetime clocks.
+int nvt_touch_extract_region(struct nvt_touch_core *core,const int16_t *rows,
+                             int first_row,int row_count,struct nvt_region_candidates *out);
+// Publish expire() first. Only fresh independent regional observations may be
+// consumed; unmatched IDs are UNKNOWN. Full local blobs may confirm ordinary
+// two-observation DOWN; the global-single-peak fast path is not asserted by a strip.
+int nvt_touch_process_region(struct nvt_touch_core *core,
+                             const struct nvt_region_candidates *observation,
+                             uint64_t now_us,struct nvt_contact *out,int max);
+// Apply already-qualified regional PM positions to existing visible tracking IDs.
+// Unobserved IDs are UNKNOWN: no implicit misses, UP, new DOWN or baseline update.
+// Caller validates frame freshness/epoch and measurement quality before this API;
+// PM fit ownership must include the slot generation, not only its reusable ID.
+// Returns complete visible set after an accepted update, or -1 if none accepted.
+int nvt_touch_process_partial(struct nvt_touch_core *core,
+                             const struct nvt_contact *measured, int count,
+                             uint64_t now_us, struct nvt_contact *out, int max);
+// Caller-certified presence may annotate a visible contact without renewing its
+// position deadline. Generation prevents late evidence reviving a reused ID.
+int nvt_touch_note_presence(struct nvt_touch_core *core, int tracking_id,
+                           uint64_t generation, uint64_t now_us);
+// Caller has established current coverage of the contact's motion/shape region,
+// trustworthy baseline and actual negative signal. This API does NOT infer that
+// condition from an empty stripe. Ends only that generation and returns full set.
+int nvt_touch_covered_negative(struct nvt_touch_core *core, int tracking_id,
+                              uint64_t generation, uint64_t now_us,
+                              struct nvt_contact *out, int max);
+// Remove expired hidden/visible slots without fake matrices or reference updates.
+// -1 = no visible change; >=0 = replacement visible set requiring publication.
+int nvt_touch_expire(struct nvt_touch_core *core, uint64_t now_us,
+                     struct nvt_contact *out, int max);
+// 0 = no pending/visible deadline, otherwise microseconds until next deadline
+// (1 when overdue). Includes hidden age1, so complete silence can expire it.
+uint64_t nvt_touch_wait_us(const struct nvt_touch_core *core, uint64_t now_us);
 // Edge compensation applied to a raw centroid coordinate.
 int nvt_touch_map_edge_axis(int value, int maximum, int low_edge_bias);
 // Row/column centre tables (before super resolution).

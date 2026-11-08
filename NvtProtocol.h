@@ -99,6 +99,11 @@ int nvt_read_frame(struct nvt_chip *c, uint8_t *frame);
 void nvt_frame_matrix(const uint8_t *frame, int16_t *matrix);
 unsigned nvt_frame_type(const uint8_t *frame);
 unsigned nvt_frame_counter(const uint8_t *frame);
+// Full-frame callers validate the header and freshness before classifying.
+// The upstream sheng THP adapter routes data type0x1d to its stylus pipeline.
+#define NVT_THP_DATA_TYPE_OFFSET (NVT_THP_HEADER_LEN+0x38)
+unsigned nvt_frame_data_type(const uint8_t *frame);
+int nvt_frame_is_stylus(const uint8_t *frame);
 
 // After the download (mirrors the Linux boot flow): firmware info, idle-baseline update, doze delay, doze mode.
 #define NVT_EVENT_HOST_CMD 0x50

@@ -312,6 +312,8 @@ void nvt_frame_matrix(const uint8_t *frame, int16_t *matrix) {
 }
 unsigned nvt_frame_type(const uint8_t *frame) {return frame[NVT_THP_HEADER_LEN+24];}
 unsigned nvt_frame_counter(const uint8_t *frame) {return (unsigned)frame[NVT_THP_HEADER_LEN+2]|((unsigned)frame[NVT_THP_HEADER_LEN+3]<<8);}
+unsigned nvt_frame_data_type(const uint8_t *frame) {return frame[NVT_THP_DATA_TYPE_OFFSET];}
+int nvt_frame_is_stylus(const uint8_t *frame) {return nvt_frame_data_type(frame)==0x1d;}
 
 int nvt_get_fw_info(struct nvt_chip *c, struct nvt_fw_info *info) {
     uint8_t b[38];
