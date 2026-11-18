@@ -40,11 +40,19 @@
 #define NVT_UP_THRESHOLD 220
 #define NVT_COORDINATE_REDUCE 25
 #define NVT_PALM_MIN_NODES 60
-// The reference follows the slow drift of the panel: in a frame without a node at the peak threshold every node moves
-// 1/NVT_REFERENCE_RATE of the way to its value (nodes near a finger are left alone: absorbing its fringe would shift its centroid).
-// A reference taken once at startup drifted far enough in ten minutes for maxima above the noise floor to appear all over the panel
-// (int-274: 51765 merges).
+// Starting a new contact requires at least two coupled nodes above the noise floor so an isolated single-node or uncoupled channel spike
+// from thermal drift cannot trigger a phantom tap.
+#define NVT_MIN_ONSET_AREA 2
+// The reference follows the panel only while nothing touches it. In a frame without a finger (new, reported or held through a
+// dropout) and without a palm, every node moves 1/NVT_REFERENCE_RATE of its delta, at least one unit, towards its value. A node above
+// the peak threshold that is no contact (a warm node, a single-node spike) does not stop this, so it cannot freeze the reference and
+// grow into a contact; a rise as wide as a palm counts as one only from the peak threshold on. While something touches the panel the
+// reference stays as it is, everywhere: a hand also changes nodes far from it, and a reference that follows them reads the change
+// back as contacts when the hand lifts (ten contacts that never lifted, on hardware).
 #define NVT_REFERENCE_RATE 32
+// Frames without a finger or palm before the reference moves again (67 ms at 120 Hz; xiaomi-sheng-thp waits 8 frames as well): what
+// a lifting finger still shows, or one coming back for a second tap, is not written into it.
+#define NVT_REFERENCE_SETTLE 8
 
 struct nvt_contact {
     int slot, tracking_id;
@@ -85,6 +93,8 @@ struct nvt_touch_core {
     unsigned long peaks_max, peak_overflows, reference_frames;
     // Fingers that went unseen and came back within NVT_HOLD_FRAMES, fingers lifted per miss reason, and frames by type (2 / 4).
     unsigned long holds_bridged, ends[NVT_MISS_KINDS], frames_by_type[2];
+    // Frames since the last finger or palm, counted up to NVT_REFERENCE_SETTLE.
+    unsigned quiet_frames;
     struct nvt_slot slots[NVT_SLOTS];
     // Scratch for nvt_touch_process: 19 KB, kept here because kernel threads have 16 KiB stacks (a stack probe in the
     // function prologue faulted on hardware when these were locals).
