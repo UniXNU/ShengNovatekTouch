@@ -293,6 +293,109 @@ int main(void){
         }
         assert(core.ends[NVT_MISS_TAKEN]==0&&core.ends[NVT_MISS_FAR]==0);
     }
-    puts("PASS: NvtTouchCore baseline, tracking, palm, smoothing, partial dropout, fast retap, edge onset, four/five-finger pinch and pause, overflow and drift; synthetic frames");
+    // Panel drift while a resting finger is held down: the reference waits (a hand changes far nodes too, see below), the finger
+    // keeps its place and identifier, and the reference catches up with the drift in the quiet second after the lift.
+    settle();
+    {
+        const int center_x=nvt_touch_column_center(30)*NVT_SUPER_RESOLUTION;
+        const int center_y=nvt_touch_row_center(20)*NVT_SUPER_RESOLUTION;
+        const int16_t edge_before=core.reference[4];
+        int held_id=-1;
+        for(int frame=0;frame<600;++frame){
+            const int drift=frame*80/600;
+            base_frame(f,2);
+            for(int i=0;i<NVT_NODES;++i)f[i]=(int16_t)(f[i]+drift);
+            blob(f,20.0,30.0,900,1.3);
+            n=feed(f,c,12);
+            if(frame==0){assert(n==0);continue;}
+            assert(n==1);
+            if(held_id<0)held_id=c[0].tracking_id;
+            assert(c[0].tracking_id==held_id);
+            assert(abs(c[0].x-center_x)<80&&abs(c[0].y-center_y)<80);
+        }
+        assert(core.reference[4]==edge_before);
+        for(int frame=0;frame<120;++frame){
+            base_frame(f,2);
+            for(int i=0;i<NVT_NODES;++i)f[i]=(int16_t)(f[i]+80);
+            assert(feed(f,c,12)==0);
+        }
+        assert(abs(core.reference[4]-(5000+(4%7)*3+80))<=3);
+        assert(abs(core.reference[20*NVT_COLUMNS+30]-(5000+((20*NVT_COLUMNS+30)%7)*3+80))<=3);
+    }
+    // Post-doze thermal hotspots (an uncoupled node at row 0 col 4 above NVT_DOWN_THRESHOLD and a warm patch above NVT_PEAK_THRESHOLD)
+    // neither spawn a ghost Dock tap during normal taps elsewhere on the panel nor keep the reference from converging after them.
+    settle();
+    {
+        const int tap_x=nvt_touch_column_center(45)*NVT_SUPER_RESOLUTION;
+        const int tap_y=nvt_touch_row_center(13)*NVT_SUPER_RESOLUTION;
+        for(int tap=0;tap<4;++tap){
+            for(int frame=0;frame<36;++frame){
+                base_frame(f,2);
+                f[4]=(int16_t)(f[4]+340);
+                f[3]=(int16_t)(f[3]+85);
+                blob(f,32.0,22.0,250,1.1);
+                if(frame<6)blob(f,13.0,45.0,900,1.2);
+                n=feed(f,c,12);
+                if(frame==0)assert(n==0);
+                else if(frame<6){
+                    assert(n==1);
+                    assert(abs(c[0].x-tap_x)<120&&abs(c[0].y-tap_y)<120);
+                }else{
+                    assert(n==0);
+                }
+            }
+        }
+        // The three quiet seconds before the controller is sent back to doze: the reference has taken both in by then.
+        for(int frame=0;frame<360;++frame){
+            base_frame(f,2);
+            f[4]=(int16_t)(f[4]+340);
+            f[3]=(int16_t)(f[3]+85);
+            blob(f,32.0,22.0,250,1.1);
+            assert(feed(f,c,12)==0);
+        }
+        assert(abs(core.reference[4]-(5000+(4%7)*3+340))<=15);
+        assert(abs(core.reference[32*NVT_COLUMNS+22]-(5000+((32*NVT_COLUMNS+22)%7)*3+250))<=15);
+    }
+    // A wide, weak rise is no hand: as large as a palm (about 90 nodes above the noise floor) but below the peak threshold, the way a
+    // panel that warmed up while the controller dozed shows it. Nothing is reported and the reference takes it in.
+    settle();
+    {
+        for(int frame=0;frame<360;++frame){
+            base_frame(f,2);
+            blob(f,20.0,30.0,150,6.0);
+            assert(feed(f,c,12)==0);
+        }
+        assert(abs(core.reference[20*NVT_COLUMNS+30]-(5000+((20*NVT_COLUMNS+30)%7)*3+150))<=5);
+    }
+    // The reference waits NVT_REFERENCE_SETTLE frames after the last finger before it moves again: what a lifting finger still shows
+    // (here 200, below the up threshold) is not written into it.
+    settle();
+    {
+        const int node=20*NVT_COLUMNS+30;
+        for(int frame=0;frame<10;++frame){base_frame(f,2);blob(f,20.0,30.0,900,1.3);feed(f,c,12);}
+        const int16_t before=core.reference[node];
+        for(int frame=0;frame<NVT_REFERENCE_SETTLE;++frame){base_frame(f,2);blob(f,20.0,30.0,200,1.3);feed(f,c,12);}
+        assert(core.reference[node]==before);
+    }
+    // What the panel shows while fingers are down is not written into the reference. Patches far from two held fingers read 350 below
+    // their rest value for as long as the fingers stay and return to it when they lift: nothing is reported after the lift, and no
+    // contact is left behind. (On hardware, a reference that kept moving during the touch left ten contacts that never lifted.)
+    settle();
+    {
+        static const int far[8][2]={{8,50},{31,11},{5,20},{34,40},{12,8},{36,25},{3,35},{22,54}};
+        for(int frame=0;frame<400;++frame){
+            base_frame(f,2);
+            blob(f,20.0,30.0,900,1.3);blob(f,26.0,44.0,900,1.3);
+            for(int p=0;p<8;++p)blob(f,far[p][0],far[p][1],-350,1.2);
+            n=feed(f,c,12);
+            if(frame>0)assert(n==2);
+        }
+        for(int frame=0;frame<120;++frame){
+            base_frame(f,2);
+            assert(feed(f,c,12)==0);
+        }
+        for(int s=0;s<NVT_SLOTS;++s)assert(!core.slots[s].active);
+    }
+    puts("PASS: NvtTouchCore baseline, tracking, palm, smoothing, partial dropout, fast retap, edge onset, four/five-finger pinch and pause, overflow, drift, warm nodes and far-field of held fingers; synthetic frames");
     return 0;
 }
